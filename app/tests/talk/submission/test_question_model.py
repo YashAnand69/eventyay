@@ -1,10 +1,13 @@
 import pytest
 from django_countries.fields import Country
 from django_scopes import scope
-from eventyay.submission.forms import TalkQuestionsForm
-from eventyay.base.models import Answer, TalkQuestion as Question, TalkQuestionVariant as QuestionVariant
 
+from eventyay.base.models import Answer
+from eventyay.base.models import TalkQuestion as Question
+from eventyay.base.models import TalkQuestionVariant as QuestionVariant
 from eventyay.helpers.countries import get_country_name
+from eventyay.orga.views.cfp import CfPQuestionRemind
+from eventyay.submission.forms import TalkQuestionsForm
 
 
 @pytest.mark.parametrize("target", ("submission", "speaker", "reviewer"))
@@ -121,6 +124,10 @@ def test_question_base_properties(submission, question):
         ("number", "1", "1"),
         ("string", "hm", "hm"),
         ("text", "", ""),
+        ("date", "2026-10-02", "2026-10-02"),
+        ("datetime", "2026-10-02T10:30:00+05:30", "2026-10-02T10:30:00+05:30"),
+        ("date", "", ""),
+        ("datetime", "", ""),
         ("boolean", "True", "Yes"),
         ("boolean", "False", "No"),
         ("boolean", "None", ""),
@@ -139,6 +146,7 @@ def test_answer_string_property(event, variant, answer, expected):
         question = Question.objects.create(question="?", variant=variant, event=event)
         answer = Answer.objects.create(question=question, answer=answer)
         assert answer.answer_string == expected
+        assert answer.is_answered == bool(expected)
 
 
 @pytest.mark.django_db
@@ -217,3 +225,24 @@ def test_select_answer_saved_and_round_trips(submission):
         round_trip_form = TalkQuestionsForm(event=event, submission=submission)
         # For ModelChoiceField, the initial value is usually the model instance or PK
         assert round_trip_form.fields[f'question_{question.pk}'].initial == option2
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('target', ['submission', 'speaker'])
+@pytest.mark.parametrize('variant,value', [('date', '2026-10-02'), ('datetime', '2026-10-02T10:30:00+05:30')])
+@pytest.mark.parametrize('filled', [True, False])
+def test_date_answer_reminder_eligibility(submission, target, variant, value, filled):
+    event = submission.event
+    with scope(event=event):
+        person = submission.speakers.first()
+        question = Question.objects.create(question='When?', variant=variant, event=event, target=target)
+        Answer.objects.create(
+            question=question,
+            answer=value if filled else '',
+            submission=submission if target == 'submission' else None,
+            person=person if target == 'speaker' else None,
+        )
+        missing = CfPQuestionRemind.get_missing_answers(
+            questions=[question], person=person, submissions=event.submissions.all(),
+        )
+        assert missing == ([] if filled else [question])
