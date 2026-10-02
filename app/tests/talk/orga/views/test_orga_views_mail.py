@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 from unittest.mock import patch
 
 import pytest
@@ -1379,7 +1380,6 @@ def test_mail_detail_form_preserves_external_historical_to_users(event, mail, ot
 def test_compose_mail_preview_endpoint(orga_client, event):
     url = event.orga_urls.base + 'mails/compose/preview'
     # Test valid JSON with placeholder
-    import json
     response = orga_client.post(
         url,
         data=json.dumps({"html": "<p>Hello {event}</p>", "locale": "en"}),
@@ -1397,6 +1397,30 @@ def test_compose_mail_preview_endpoint(orga_client, event):
         content_type="application/json"
     )
     assert response.status_code == 400
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('text', ['See you there :}', 'See you there {', '{"talk": "x"}'])
+def test_compose_mail_preview_invalid_template(orga_client, event, text):
+    response = orga_client.post(
+        event.orga_urls.base + 'mails/compose/preview',
+        data=json.dumps({'html': f'<p>{text}</p>', 'locale': 'en'}),
+        content_type='application/json',
+    )
+    assert response.status_code == 400
+    assert 'stray { or }' in response.json()['error']
+
+
+@pytest.mark.django_db
+def test_compose_mail_preview_escaped_braces(orga_client, event):
+    response = orga_client.post(
+        event.orga_urls.base + 'mails/compose/preview',
+        data=json.dumps({'html': '<p>{{"talk": "x"}} {event}</p>', 'locale': 'en'}),
+        content_type='application/json',
+    )
+    assert response.status_code == 200
+    assert '{"talk": "x"}' in response.json()['html']
+    assert '<span class="placeholder"' in response.json()['html']
 
 
 def test_session_test_mail_uses_fallbacks_for_empty_subject_and_body(orga_client, event, submission):
