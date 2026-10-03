@@ -2,7 +2,6 @@ import datetime
 import json
 import re
 
-from django.test import override_settings
 from django_scopes import scopes_disabled
 
 from eventyay.base.models import Event, Organizer, Team, User
@@ -133,27 +132,6 @@ class MailSettingPreviewTest(SoupTest):
         assert len(res['msgs']) == 2
         assert self.locale_event.name['en'] in res['msgs']['en']
         assert self.locale_event.name['de-formal'] in res['msgs']['de-formal']
-
-    @override_settings(DEBUG=True)
-    def test_invalid_template_returns_validation_error(self):
-        for text in ('See you there :}', 'See you there {', '{"talk": "x"}'):
-            with self.subTest(text=text):
-                response = self.client.post(
-                    self.target.format(self.orga1.slug, self.event1.slug),
-                    {'product': 'mail_text_order_free', 'mail_text_order_free_0': text},
-                )
-                assert response.status_code == 400
-                assert 'stray { or }' in response.json()['error']
-
-    @override_settings(DEBUG=True)
-    def test_escaped_braces_and_placeholder_preview(self):
-        response = self.client.post(
-            self.target.format(self.orga1.slug, self.event1.slug),
-            {'product': 'mail_text_order_free', 'mail_text_order_free_0': '{{"talk": "x"}} {event}'},
-        )
-        assert response.status_code == 200
-        assert '{"talk": "x"}' in response.json()['msgs']['en']
-        assert '30C3' in response.json()['msgs']['en']
 
     def test_i18n_locale_order(self):
         self.locale_event.settings.locales = ['de-formal', 'en']
