@@ -8,7 +8,8 @@ from eventyay.base.models import Team
 
 @pytest.fixture
 def preview_client(client, user, event, settings):
-    settings.DEBUG = True
+    settings.SITE_URL = 'https://testserver'
+    settings.SITE_NETLOC = 'testserver'
     with scopes_disabled():
         team = Team.objects.create(
             organizer=event.organizer,
@@ -28,10 +29,12 @@ def request_preview(client, event, endpoint, text):
             event.orga_urls.base + 'mails/compose/preview',
             data=json.dumps({'html': f'<p>{text}</p>', 'locale': 'en'}),
             content_type='application/json',
+            secure=True,
         )
     return client.post(
         f'/control/event/{event.organizer.slug}/{event.slug}/settings/email/preview',
         {'product': 'mail_text_order_free', 'mail_text_order_free_0': text},
+        secure=True,
     )
 
 
