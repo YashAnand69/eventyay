@@ -286,9 +286,12 @@ class MailDelete(PermissionRequired, ActionConfirmMixin, TemplateView):
     def action_text(self):
         return self.question()
 
-    @property
+    @cached_property
     def action_back_url(self):
-        return self.request.event.orga_urls.outbox
+        is_draft = self.request.event.queued_mails.filter(
+            pk=self.kwargs.get('pk'), sent__isnull=True, is_draft=True
+        ).exists()
+        return self.request.event.orga_urls.drafts if is_draft else self.request.event.orga_urls.outbox
 
     @context
     def question(self):
@@ -303,6 +306,7 @@ class MailDelete(PermissionRequired, ActionConfirmMixin, TemplateView):
         ).format(count=count)
 
     def post(self, request, *args, **kwargs):
+        back_url = self.action_back_url
         mails = self.queryset
         mail_count = len(mails)
         if not mails:
@@ -326,7 +330,7 @@ class MailDelete(PermissionRequired, ActionConfirmMixin, TemplateView):
             ).format(count=mail_count),
         )
 
-        return redirect(request.event.orga_urls.outbox)
+        return redirect(back_url)
 
 
 class OutboxPurge(ActionConfirmMixin, OutboxList):
@@ -367,6 +371,8 @@ class MailDetail(PermissionRequired, ActionFromUrl, CreateOrUpdateView):
         return self.request.event.queued_mails.filter(pk=self.kwargs.get('pk')).first()
 
     def get_success_url(self):
+        if self.object.is_draft:
+            return self.object.event.orga_urls.drafts
         return self.object.event.orga_urls.outbox
 
     def form_valid(self, form):

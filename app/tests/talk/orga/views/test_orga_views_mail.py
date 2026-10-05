@@ -1307,6 +1307,53 @@ def test_drafts_are_not_listed_or_sent_with_the_outbox(orga_client, event, mail)
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize('is_draft', [True, False])
+def test_mail_save_returns_to_its_list(orga_client, event, mail, is_draft):
+    with scope(event=event):
+        mail.is_draft = is_draft
+        mail.save(update_fields=['is_draft'])
+    djmail.outbox = []
+    response = orga_client.post(
+        mail.urls.base,
+        data={
+            'to': 'recipient@example.net',
+            'bcc': mail.bcc or '',
+            'cc': mail.cc or '',
+            'reply_to': mail.reply_to or '',
+            'subject': 'Updated subject',
+            'text': mail.text or '',
+        },
+    )
+    expected = event.orga_urls.drafts if is_draft else event.orga_urls.outbox
+    assert response.status_code == 302
+    assert response.url == expected
+    with scope(event=event):
+        mail.refresh_from_db()
+        assert mail.subject == 'Updated subject'
+        assert mail.is_draft is is_draft
+        assert mail.sent is None
+    assert djmail.outbox == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('is_draft', [True, False])
+def test_mail_discard_returns_to_its_list(orga_client, event, mail, is_draft):
+    with scope(event=event):
+        mail.is_draft = is_draft
+        mail.save(update_fields=['is_draft'])
+    url = mail.urls.delete
+    expected = event.orga_urls.drafts if is_draft else event.orga_urls.outbox
+    confirmation = orga_client.get(url)
+    assert confirmation.status_code == 200
+    assert f'href="{expected}"' in confirmation.text
+    response = orga_client.post(url)
+    assert response.status_code == 302
+    assert response.url == expected
+    with scope(event=event):
+        assert not QueuedMail.objects.filter(pk=mail.pk).exists()
+
+
+@pytest.mark.django_db
 def test_orga_can_send_session_test_mail(orga_client, event, speaker, submission):
     djmail.outbox = []
     response = orga_client.post(
