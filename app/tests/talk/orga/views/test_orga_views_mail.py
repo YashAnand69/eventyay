@@ -1337,6 +1337,40 @@ def test_mail_save_returns_to_its_list(orga_client, event, mail, is_draft):
 
 @pytest.mark.django_db
 @pytest.mark.parametrize('is_draft', [True, False])
+@pytest.mark.parametrize('scheduled', [True, False])
+def test_mail_send_returns_to_its_list(orga_client, event, mail, is_draft, scheduled):
+    with scope(event=event):
+        mail.is_draft = is_draft
+        mail.scheduled_at = now() + dt.timedelta(days=1) if scheduled else None
+        mail.save(update_fields=['is_draft', 'scheduled_at'])
+    djmail.outbox = []
+    response = orga_client.post(
+        mail.urls.base,
+        data={
+            'to': 'recipient@example.net',
+            'bcc': '',
+            'cc': '',
+            'reply_to': '',
+            'subject': mail.subject,
+            'text': 'Draft ready to send.',
+            'form': 'send',
+            'scheduled_at_0': mail.scheduled_at.strftime('%Y-%m-%d') if scheduled else '',
+            'scheduled_at_1': mail.scheduled_at.strftime('%H:%M') if scheduled else '',
+        },
+    )
+    assert response.status_code == 302
+    expected = event.orga_urls.drafts if is_draft and scheduled else event.orga_urls.outbox
+    assert response.url == expected
+    with scope(event=event):
+        mail.refresh_from_db()
+        assert (mail.sent is None) is scheduled
+    assert len(djmail.outbox) == (0 if scheduled else 1)
+    if not scheduled:
+        assert djmail.outbox[0].body == 'Draft ready to send.'
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('is_draft', [True, False])
 def test_mail_discard_returns_to_its_list(orga_client, event, mail, is_draft):
     with scope(event=event):
         mail.is_draft = is_draft

@@ -371,13 +371,13 @@ class MailDetail(PermissionRequired, ActionFromUrl, CreateOrUpdateView):
         return self.request.event.queued_mails.filter(pk=self.kwargs.get('pk')).first()
 
     def get_success_url(self):
-        if self.object.is_draft:
+        if self.object.is_draft and not self.object.sent:
             return self.object.event.orga_urls.drafts
         return self.object.event.orga_urls.outbox
 
     def form_valid(self, form):
         form.instance.event = self.request.event
-        result = super().form_valid(form)
+        super().form_valid(form)
         if form.has_changed():
             action = 'eventyay.mail.' + ('update' if self.object else 'create')
             form.instance.log_action(action, person=self.request.user, orga=True)
@@ -398,7 +398,7 @@ class MailDetail(PermissionRequired, ActionFromUrl, CreateOrUpdateView):
                 self.request,
                 _('The email has been saved. When you send it, the updated text will be used.'),
             )
-        return result
+        return redirect(self.get_success_url())
 
 
 class MailCopy(PermissionRequired, View):
