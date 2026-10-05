@@ -3,12 +3,14 @@ import json
 from unittest.mock import patch
 
 import pytest
+from bs4 import BeautifulSoup
 from django.core import mail as djmail
 from django.utils.timezone import now
 from django_scopes import scope
 
 from eventyay.base.entitlements import EntitlementDecision
 from eventyay.base.models import MailTemplate, MailTemplateRoles, QueuedMail
+from eventyay.common.exceptions import SendMailException
 from eventyay.orga.forms.mails import MailDetailForm, WriteSessionMailForm
 
 
@@ -528,7 +530,7 @@ def test_orga_can_compose_single_mail(
 
 
 @pytest.mark.django_db
-def test_orga_can_compose_single_mail_multiple_states_and_failing_placeholders(
+def test_orga_can_compose_single_mail_multiple_states_with_missing_slot(
     orga_client, orga_user, event, slot, other_submission
 ):
     with scope(event=event):
@@ -547,13 +549,9 @@ def test_orga_can_compose_single_mail_multiple_states_and_failing_placeholders(
     )
     assert response.status_code == 200
     with scope(event=event):
-        assert (
-            QueuedMail.objects.filter(sent__isnull=True).count() == 1
-        )  # only one, the other fails for lack of a room name!
-        assert (
-            QueuedMail.objects.filter(sent__isnull=True).first().text
-            == f"bar {slot.room.name}"
-        )
+        mails = QueuedMail.objects.filter(sent__isnull=True)
+        assert mails.count() == 2
+        assert {mail.text for mail in mails} == {f"bar {slot.room.name}", "bar "}
 
 
 @pytest.mark.django_db
@@ -1117,7 +1115,10 @@ def test_teams_composer_shows_test_email_and_send_email_label(orga_client, event
     assert "Send test email" in response.text
     assert "Send email" in response.text
     assert "mail-composer" in response.text
-    assert 'class="form-with-placeholder mail-composer" data-always-immediate' in response.text
+    composer = BeautifulSoup(response.text, "html.parser").select_one("form.mail-composer")
+    assert composer is not None
+    assert "form-with-placeholder" in composer["class"]
+    assert composer.has_attr("data-always-immediate")
     assert "Save draft" not in response.text
     assert 'id="delivery-mode-later"' not in response.text
     assert 'id="id_skip_queue"' not in response.text
@@ -1399,6 +1400,7 @@ def test_compose_mail_preview_endpoint(orga_client, event):
     assert response.status_code == 400
 
 
+@pytest.mark.django_db
 def test_session_test_mail_uses_fallbacks_for_empty_subject_and_body(orga_client, event, submission):
     djmail.outbox = []
     response = orga_client.post(
@@ -1493,3 +1495,28 @@ def test_draft_to_outbox_denied_by_entitlement(orga_client, event, mail):
 
 
 
+
+
+@pytest.mark.django_db
+def test_session_composer_keeps_valid_mail_when_another_recipient_cannot_render(
+    orga_client, event, slot, other_submission
+):
+    original_to_mail = MailTemplate.to_mail
+
+    def render_mail(template, **kwargs):
+        if kwargs["context_kwargs"].get("submission") == other_submission:
+            raise SendMailException("Recipient's template cannot be rendered.")
+        return original_to_mail(template, **kwargs)
+
+    with scope(event=event):
+        QueuedMail.objects.all().delete()
+    with patch.object(MailTemplate, "to_mail", autospec=True, side_effect=render_mail):
+        response = orga_client.post(
+            event.orga_urls.compose_mails_sessions,
+            data={"state": ["submitted", "confirmed"], "subject_0": "foo {name}", "text_0": "bar {submission_title}"},
+        )
+    assert response.status_code == 302
+    with scope(event=event):
+        mails = QueuedMail.objects.filter(sent__isnull=True)
+        assert mails.count() == 1
+        assert mails.get().text == f"bar {slot.submission.title}"
