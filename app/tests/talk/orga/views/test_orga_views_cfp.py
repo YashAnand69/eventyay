@@ -861,3 +861,32 @@ def test_can_send_special_access_code(orga_client, access_code, track):
     djmail.outbox = []
     response = orga_client.get(access_code.urls.send, follow=True)
     assert response.status_code == 200
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('target', ['submission', 'speaker'])
+@pytest.mark.parametrize('restriction', ['none', 'matching', 'other'])
+@pytest.mark.parametrize('dimension', ['track', 'submission_type'])
+def test_question_reminders_respect_question_scope(
+    orga_client, event, question, speaker, submission, track, other_track, target, restriction, dimension
+):
+    with scope(event=event):
+        submission.track = track
+        submission.save(update_fields=['track'])
+        question.target = target
+        question.save(update_fields=['target'])
+        if restriction != 'none':
+            if dimension == 'track':
+                question.tracks.add(track if restriction == 'matching' else other_track)
+            else:
+                other_type = event.submission_types.create(name='Other type')
+                question.submission_types.add(submission.submission_type if restriction == 'matching' else other_type)
+        initial_count = QueuedMail.objects.count()
+    response = orga_client.post(
+        event.cfp.urls.remind_questions,
+        {'role': '', 'track': track.pk, 'questions': [question.pk]},
+    )
+    assert response.status_code == 302
+    with scope(event=event):
+        expected = 0 if restriction == 'other' else 1
+        assert QueuedMail.objects.count() == initial_count + expected
