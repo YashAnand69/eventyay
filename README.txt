@@ -1,0 +1,1 @@
+Actual Vue schedule editor with fixture API responses, Chrome154, desktop1440 andmobile390 checks. This recording is a local component integration reproduction; no live Django backend or event mutation is claimed. Shows save403, delete403 and real retry204 with refresh403 handling. See PR for command evidence and inherited lint/type limitations.
