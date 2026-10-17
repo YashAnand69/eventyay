@@ -1279,8 +1279,8 @@ async function deleteShiftById(id: number): Promise<boolean> {
       }
       try {
         await fetchAdditionalScheduleData()
-      } catch {
-        // The deletion succeeded; api.http already records refresh failures.
+      } catch (error) {
+        console.warn('Shift deleted, but schedule details could not be refreshed', { shiftId: id, error })
       }
     },
   })
