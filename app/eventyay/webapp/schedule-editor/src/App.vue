@@ -514,7 +514,7 @@ async function onConfirmDialogConfirm() {
     } catch (error) {
       confirmDialogError.value = error instanceof HTTPError && error.status === 403 && confirmDialogForbiddenMessage
         ? confirmDialogForbiddenMessage
-        : (error as Error).message || $t('An error occurred. Please try again.')
+        : $t('An error occurred. Please try again.')
     } finally {
       confirmDialogBusy.value = false
     }

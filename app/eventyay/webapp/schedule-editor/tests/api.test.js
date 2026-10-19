@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 
 let server
@@ -7,7 +8,11 @@ let api
 let HTTPError
 
 before(async () => {
-  server = await createServer({ server: { middlewareMode: true }, appType: 'custom' })
+  server = await createServer({
+    root: fileURLToPath(new URL('..', import.meta.url)),
+    server: { middlewareMode: true },
+    appType: 'custom',
+  })
   ;({ default: api, HTTPError } = await server.ssrLoadModule('/src/api.ts'))
 })
 
@@ -16,10 +21,10 @@ after(async () => {
 })
 
 for (const status of [403, 500]) {
-  for (const [name, body, contentType] of [
-    ['JSON', JSON.stringify({ error: 'Forbidden' }), 'application/json'],
-    ['HTML', '<h1>Forbidden</h1>', 'text/html'],
-    ['invalid JSON', '{', 'application/json'],
+  for (const [name, body, contentType, detail] of [
+    ['JSON', JSON.stringify({ error: 'Forbidden' }), 'application/json', JSON.stringify({ error: 'Forbidden' })],
+    ['HTML', '<h1>Forbidden</h1>', 'text/html', 'server returned non-JSON response'],
+    ['invalid JSON', '{', 'application/json', 'server returned invalid JSON'],
   ]) {
     test(`preserves HTTP ${status} for ${name} responses`, async (t) => {
       t.mock.method(globalThis, 'fetch', async () => new Response(body, {
@@ -30,6 +35,7 @@ for (const status of [403, 500]) {
         assert.ok(error instanceof HTTPError)
         assert.ok(error instanceof Error)
         assert.equal(error.status, status)
+        assert.equal(error.detail, detail)
         assert.match(error.message, new RegExp(`^HTTP error ${status}: `))
         return true
       })

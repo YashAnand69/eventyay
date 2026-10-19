@@ -55,7 +55,7 @@ interface AssignmentResponse {
 }
 
 export class HTTPError extends Error {
-  constructor(readonly status: number, detail: string) {
+  constructor(readonly status: number, readonly detail: string) {
     super(`HTTP error ${status}: ${detail}`)
     this.name = 'HTTPError'
   }
