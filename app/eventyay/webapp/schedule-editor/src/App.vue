@@ -3,7 +3,7 @@
 	teleport(to="body")
 		.dragged-session-avatar(
 			v-if="draggedSession && isPointerDragging",
-			:style="dragAvatarStyle"
+			ref="dragAvatarEl"
 		)
 			session(
 				:session="draggedSession",
@@ -66,17 +66,23 @@
 					span.unassigned-title
 						i.fa.fa-list
 						span {{ translations.unassignedTitle }} ({{ unscheduled.length }})
-						span.drop-hint(v-if="canDropToDismissOrUnassign")  - {{ !draggedSession?.code ? $t('Drop here to dismiss') : $t('Drop here to unassign') }}
+						span.drop-hint(v-if="canDropToDismissOrUnassign", :class="{'is-break-hint': !draggedSession?.code}")  - {{ !draggedSession?.code ? $t('Drop here to dismiss') : $t('Drop here to unassign') }}
 					span.unassigned-collapse-icon
 						i.fa(:class="isUnassignedCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'")
 				.unassigned-body
 					p.unschedule-hint(v-if="unscheduleHint", role="status") {{ unscheduleHint }}
 					.unassigned-drop-zone(v-if="canDropToDismissOrUnassign", :class="{'is-hovered': isUnassigning, 'is-break-drop': !draggedSession?.code}")
-						.drop-zone-icon-wrap
-							i.fa(:class="!draggedSession?.code ? 'fa-trash' : 'fa-inbox'")
-						.drop-zone-content
-							span.drop-zone-title {{ !draggedSession?.code ? $t('Drop here to dismiss break') : $t('Drop here to unassign session') }}
-							span.drop-zone-subtitle {{ !draggedSession?.code ? $t('Removes break from timetable') : $t('Returns session to unscheduled list') }}
+						.drop-zone-main
+							.drop-zone-icon-wrap
+								i.fa(:class="!draggedSession?.code ? 'fa-trash' : 'fa-inbox'")
+							.drop-zone-content
+								span.drop-zone-title {{ !draggedSession?.code ? $t('Drop here to dismiss break') : $t('Drop here to unassign session') }}
+								span.drop-zone-subtitle {{ !draggedSession?.code ? $t('Removes break from timetable') : $t('Returns session to unscheduled list') }}
+						.drop-zone-preview(v-if="isUnassigning && draggedSession")
+							session.unassigned-preview-pill(
+								:session="draggedSession",
+								:isDragClone="true"
+							)
 					.unassigned-header
 						.density-controls
 							button.density-btn(:class="{active: condensedView}", @click="toggleCondensedView", :title="condensedView ? $t('Normal view') : $t('Condensed view')", :aria-pressed="condensedView.toString()")
@@ -135,9 +141,23 @@
 			)
 				i.fa(:class="isSidebarCollapsed ? 'fa-bars' : 'fa-chevron-left'", aria-hidden="true")
 			#schedule-wrapper
+				.schedule-action-toast(v-if="scheduleActionError", role="alert")
+					span {{ scheduleActionError }}
+					button.action-toast-dismiss(type="button", @click="scheduleActionError = ''", :aria-label="$t('Dismiss')")
+						i.fa.fa-times(aria-hidden="true")
 				.schedule-controls(:style="actionsControlsStyle")
-					bunt-tabs.days(v-if="days", :modelValue="currentDay.format()", ref="tabs" :class="['grid-tabs']")
-						bunt-tab(v-for="day of days", :key="day.format()", :id="day.format()", :header="day.format(dateFormat)", @selected="changeDay(day)")
+					.date-selector(v-if="days && days.length", role="tablist", :aria-label="$t('Select date')")
+						button.day-btn(
+							v-for="day of days",
+							:key="day.format('YYYY-MM-DD')",
+							type="button",
+							role="tab",
+							:id="`day-tab-${day.format('YYYY-MM-DD')}`",
+							:class="{ active: currentDay && day.isSame(currentDay, 'day') }",
+							:aria-selected="currentDay && day.isSame(currentDay, 'day') ? 'true' : 'false'",
+							@click="changeDay(day)"
+						)
+							| {{ day.format(dateFormat) }}
 				grid-schedule(:sessions="sessions",
 					:density="gridDensity",
 					:timeDensityMinutes="timeDensityMinutes",
@@ -148,6 +168,7 @@
 					:end="days.at(-1).clone().endOf('day')",
 					:currentDay="currentDay",
 					:draggedSession="draggedSession",
+					:isUnassigning="isUnassigning",
 					:allowOverlap="caps.allowOverlap",
 					@changeDay="changeDay",
 					@startDragging="caps.canDrag ? startDragging($event) : null",
@@ -211,14 +232,13 @@
 									|  {{ $t('Add Role') }}
 
 
-						.data-row(v-if="editorSession.code && warnings[editorSession.code] && warnings[editorSession.code].length").form-group.row
-							label.data-label.col-form-label.col-md-3
-								i.fa.fa-exclamation-triangle.warning
+						.data-row.session-warnings.form-group.row(v-if="editorSession.code && warnings[editorSession.code] && warnings[editorSession.code].length")
+							label.data-label.col-form-label.col-md-3.session-warnings-label
+								i.fa.fa-exclamation-triangle(aria-hidden="true")
 								span {{ $t('Warnings') }}
 							.col-md-9.data-value
-								ul(v-if="warnings[editorSession.code].length > 1")
-									li.warning(v-for="warning of warnings[editorSession.code]") {{ warning.message }}
-								span(v-else) {{ warnings[editorSession.code][0].message }}
+								ul.session-warnings-list
+									li(v-for="warning of warnings[editorSession.code]") {{ warning.message }}
 					.button-row
 						input(type="submit")
 						bunt-button#btn-delete(v-if="caps.canEditRoles ? editorSession.id : !editorSession.code", @click="editorDelete", :loading="editorSessionWaiting") {{ $t('Delete') }}
@@ -281,7 +301,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, computed, onMounted, onUnmounted, onBeforeMount, nextTick } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted, onBeforeMount, nextTick } from 'vue'
 import moment, { Moment } from 'moment-timezone'
 import GridSchedule from '~/components/GridSchedule.vue'
 import TalkSession from '~/components/Session.vue'
@@ -432,6 +452,20 @@ const breakConfirmBusy = ref(false)
 let breakConfirmResolve: ((value: boolean) => void) | null = null
 let breakDeleteId: number | string | null = null
 const pendingBreakCreations = new Map<string, { dismissed: boolean }>()
+const pendingBreakDeletions = new Set<string>()
+const deletedBreakIds = new Set<string>()
+
+const scheduleActionError = ref<string>('')
+let scheduleActionErrorTimer: ReturnType<typeof setTimeout> | null = null
+
+function showScheduleActionError(msg: string) {
+  scheduleActionError.value = msg
+  if (scheduleActionErrorTimer) clearTimeout(scheduleActionErrorTimer)
+  scheduleActionErrorTimer = setTimeout(() => {
+    scheduleActionError.value = ''
+    scheduleActionErrorTimer = null
+  }, 6000)
+}
 
 function showBreakConfirmDialog(id: number | string): Promise<boolean> {
   breakDeleteId = id
@@ -447,30 +481,39 @@ function showBreakConfirmDialog(id: number | string): Promise<boolean> {
 
 async function confirmBreakDelete() {
   if (breakDeleteId == null) return
+  const idToDelete = breakDeleteId
+  const strId = String(idToDelete)
+  const numericId = Number(idToDelete)
+
+  if (pendingBreakCreations.has(strId)) {
+    pendingBreakCreations.get(strId)!.dismissed = true
+  }
+
   breakConfirmBusy.value = true
   breakConfirmError.value = ''
+
   try {
-    const strId = String(breakDeleteId)
-    if (pendingBreakCreations.has(strId)) {
-      pendingBreakCreations.get(strId)!.dismissed = true
-    }
-    const numericId = Number(breakDeleteId)
     if (numericId && !isNaN(numericId)) {
       await api.deleteTalk({ id: numericId })
+      deletedBreakIds.add(strId)
+      deletedBreakIds.add(String(numericId))
     }
     if (schedule.value) {
-      schedule.value.talks = schedule.value.talks.filter((s) => String(s.id) !== strId && (isNaN(numericId) || Number(s.id) !== numericId))
+      schedule.value.talks = schedule.value.talks.filter(
+        (s) => String(s.id) !== strId && (isNaN(numericId) || Number(s.id) !== numericId)
+      )
     }
-    await fetchAdditionalScheduleData()
     breakConfirmDialogEl.value?.close()
     breakConfirmResolve?.(true)
-  } catch (error) {
-    breakConfirmError.value = $t('Failed to delete break. Please try again.')
-    breakConfirmResolve?.(false)
-  } finally {
-    breakConfirmBusy.value = false
     breakConfirmResolve = null
     breakDeleteId = null
+  } catch (error) {
+    console.error('Failed to delete break', { id: numericId, error })
+    breakConfirmError.value = $t('Failed to delete break. Please try again.')
+    breakConfirmResolve?.(false)
+    breakConfirmResolve = null
+  } finally {
+    breakConfirmBusy.value = false
   }
 }
 
@@ -540,45 +583,87 @@ const canDropToDismissOrUnassign = computed<boolean>(() => {
   )
 })
 const isPointerDragging = ref<boolean>(false)
-const pointerPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
-const dragGrabOffset = ref<{ x: number; y: number }>({ x: 50, y: 30 })
-const dragCardWidth = ref<number>(280)
-const dragStartPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const dragAvatarEl = ref<HTMLElement | null>(null)
+// The ghost is moved by writing transform directly. A reactive style would re-render the whole editor on every pointer event.
+let dragPointerX = 0
+let dragPointerY = 0
+let dragOffsetX = 50
+let dragOffsetY = 30
+let dragAvatarWidth = 280
+let dragOriginX = 0
+let dragOriginY = 0
+let dragAvatarFrame: number | null = null
 
-const dragAvatarStyle = computed(() => {
-  if (!draggedSession.value || !isPointerDragging.value) return { display: 'none' }
-  const x = pointerPos.value.x - dragGrabOffset.value.x
-  const y = pointerPos.value.y - dragGrabOffset.value.y
-  return {
-    transform: `translate3d(${x}px, ${y}px, 0) scale(1.02)`,
-    position: 'fixed',
-    top: '0',
-    left: '0',
-    width: `${dragCardWidth.value}px`,
-    pointerEvents: 'none',
-    zIndex: '99999',
-    opacity: '0.94',
-    willChange: 'transform',
-    cursor: 'grabbing',
+function positionDragAvatar() {
+  const el = dragAvatarEl.value
+  if (!el) return
+  el.style.transform = `translate3d(${dragPointerX - dragOffsetX}px, ${dragPointerY - dragOffsetY}px, 0) scale(1.02)`
+}
+
+function scheduleDragAvatar() {
+  if (dragAvatarFrame !== null) return
+  dragAvatarFrame = requestAnimationFrame(() => {
+    dragAvatarFrame = null
+    positionDragAvatar()
+  })
+}
+
+function resetDragAvatar() {
+  if (dragAvatarFrame !== null) {
+    cancelAnimationFrame(dragAvatarFrame)
+    dragAvatarFrame = null
+  }
+}
+
+watch(isPointerDragging, (active) => {
+  if (!active) return
+  nextTick(() => {
+    const el = dragAvatarEl.value
+    if (!el) return
+    el.style.width = `${dragAvatarWidth}px`
+    el.style.visibility = 'visible'
+    positionDragAvatar()
+  })
+})
+
+let cachedUnassignedRect: DOMRect | null = null
+let unassignedResizeObserver: ResizeObserver | null = null
+watch(draggedSession, (val) => {
+  if (!val) {
+    cachedUnassignedRect = null
   }
 })
 
+function isUnassignedListClosed(): boolean {
+  return isMobile.value ? isUnassignedCollapsed.value : isSidebarCollapsed.value
+}
+
 function checkIsOverUnassigned(x: number, y: number): boolean {
   if (typeof document === 'undefined') return false
-  const el = document.getElementById('unassigned')
-  if (!el) return false
-  const rect = el.getBoundingClientRect()
+  if (isUnassignedListClosed()) return false
+  if (!cachedUnassignedRect) {
+    const el = document.getElementById('unassigned')
+    cachedUnassignedRect = el ? el.getBoundingClientRect() : null
+  }
+  const rect = cachedUnassignedRect
+  if (!rect) return false
+  if (isMobile.value) {
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom + 10
+  }
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
 }
 
 function onGlobalPointerMove(e: PointerEvent) {
   if (!draggedSession.value) return
-  pointerPos.value = { x: e.clientX, y: e.clientY }
-  const dist = Math.abs(e.clientX - dragStartPos.value.x) + Math.abs(e.clientY - dragStartPos.value.y)
-  if (dist >= 4) {
+  dragPointerX = e.clientX
+  dragPointerY = e.clientY
+  const dist = Math.abs(e.clientX - dragOriginX) + Math.abs(e.clientY - dragOriginY)
+  if (dist >= 4 && !isPointerDragging.value) {
     isPointerDragging.value = true
   }
-  isUnassigning.value = checkIsOverUnassigned(e.clientX, e.clientY)
+  if (isPointerDragging.value) scheduleDragAvatar()
+  const overUnassigned = checkIsOverUnassigned(e.clientX, e.clientY)
+  if (overUnassigned !== isUnassigning.value) isUnassigning.value = overUnassigned
 }
 
 function onGlobalPointerUp(e: PointerEvent) {
@@ -601,20 +686,15 @@ const since = ref<string | undefined>(undefined)
 const showTimeDensityMenu = ref<boolean>(false)
 const customDropdownRef = ref<HTMLElement | null>(null)
 
-const isSidebarCollapsed = ref<boolean>(() => {
-  try {
-    return typeof localStorage !== 'undefined' && localStorage.getItem('schedule_editor_sidebar_collapsed') === 'true'
-  } catch (e) {
-    return false
-  }
-})
+const isSidebarCollapsed = ref<boolean>(false)
 
 function toggleSidebar(): void {
   isSidebarCollapsed.value = !isSidebarCollapsed.value
-  try {
-    localStorage.setItem('schedule_editor_sidebar_collapsed', isSidebarCollapsed.value ? 'true' : 'false')
-  } catch (e) {}
 }
+
+watch([isSidebarCollapsed, isUnassignedCollapsed], () => {
+  cachedUnassignedRect = null
+})
 
 const isFullscreen = ref<boolean>(false)
 
@@ -1000,7 +1080,7 @@ const days = computed<Moment[]>(() => {
 })
 
 const dateFormat = computed<string>(() => {
-  return 'ddd DD MMM'
+  return 'ddd D MMM'
 })
 
 async function fetchSchedule(options?: { since?: string; warnings?: boolean }): Promise<Schedule> {
@@ -1008,25 +1088,56 @@ async function fetchSchedule(options?: { since?: string; warnings?: boolean }): 
   return sched
 }
 
+function writeWarning(code: string, list: Warning[] | undefined): void {
+  if (list?.length) warnings[code] = list
+  else delete warnings[code]
+}
+
+function replaceWarnings(next: Record<string, Warning[]> | undefined | null): void {
+  if (!next) return
+  for (const code of Object.keys(warnings)) {
+    if (!next[code]?.length) delete warnings[code]
+  }
+  for (const [code, list] of Object.entries(next)) writeWarning(code, list)
+}
+
 async function fetchAdditionalScheduleData(): Promise<void> {
   Object.assign(availabilities, await api.fetchAvailabilities() as unknown)
-  Object.assign(warnings, await api.fetchWarnings() as unknown)
+  replaceWarnings(await api.fetchWarnings() as Record<string, Warning[]> | undefined)
 }
 
 function changeDay(day: Moment): void {
-  if (day.isSame(currentDay.value)) return
-  currentDay.value = day.clone().tz(eventTimezone.value ?? 'UTC').startOf('day')
+  const targetDay = day.clone().tz(eventTimezone.value ?? 'UTC').startOf('day')
+  if (currentDay.value && targetDay.isSame(currentDay.value, 'day')) return
+  currentDay.value = targetDay
   window.location.hash = day.format('YYYY-MM-DD')
 }
 
-async function saveTalk(session: Talk): Promise<void> {
-  await api.saveTalk(session as any).then((response: any) => {
-    if (response) {
-      warnings[session.code] = response.warnings
-      const talk = schedule.value?.talks.find((s) => s.id === session.id)
-      if (talk) talk.updated = response.updated
-    }
+watch(currentDay, (newDay) => {
+  if (!newDay) return
+  nextTick(() => {
+    const tabEl = document.getElementById(`day-tab-${newDay.format('YYYY-MM-DD')}`)
+    tabEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
   })
+})
+
+async function saveTalk(session: Talk): Promise<void> {
+  const response: any = await api.saveTalk(session as any)
+  if (response && schedule.value) {
+    if (session.code && Array.isArray(response.warnings)) {
+      writeWarning(session.code, response.warnings)
+    }
+    const talk = schedule.value.talks.find((s) => String(s.id) === String(session.id))
+    if (talk) {
+      Object.assign(talk, {
+        start: response.start,
+        end: response.end,
+        room: response.room,
+        updated: response.updated,
+      })
+      schedule.value.talks = [...schedule.value.talks]
+    }
+  }
 }
 
 interface RescheduleEvent {
@@ -1045,7 +1156,13 @@ async function rescheduleSession(e: RescheduleEvent): Promise<void> {
   movedSession.end = e.end as string
   movedSession.room = e.room.id
   await saveTalk(movedSession)
-  await fetchAdditionalScheduleData()
+  if (movedSession.code) {
+    api.fetchWarnings()
+      .then((w) => replaceWarnings(w))
+      .catch((error) => {
+        console.error('Failed to refresh schedule warnings after reschedule', { sessionId: movedSession.id, error })
+      })
+  }
 }
 
 interface CreateSessionEvent {
@@ -1088,18 +1205,36 @@ async function createSession(e: CreateSessionEvent): Promise<void> {
       }
       const realId = Number(response.id)
       if (realId && !isNaN(realId)) {
+        pendingBreakDeletions.add(String(realId))
         try {
           await api.deleteTalk({ id: realId })
+          deletedBreakIds.add(String(realId))
+          if (schedule.value) {
+            schedule.value.talks = schedule.value.talks.filter((s) => String(s.id) !== String(realId))
+          }
         } catch (err) {
           console.error('Failed to delete cancelled break', err)
+          const restoredSession = {
+            ...optimisticSession,
+            ...response,
+            id: response.id,
+            room: response.room ?? roomId,
+            start: response.start ?? startStr,
+            end: response.end ?? endStr,
+          }
+          if (schedule.value) {
+            schedule.value.talks = [...schedule.value.talks, restoredSession]
+          }
+          showScheduleActionError($t('Failed to delete break. Please try again.'))
+        } finally {
+          pendingBreakDeletions.delete(String(realId))
         }
       }
-      await fetchAdditionalScheduleData()
       return
     }
 
-    if (e.session.code) {
-      warnings[e.session.code] = response.warnings
+    if (e.session.code && Array.isArray(response.warnings)) {
+      writeWarning(e.session.code, response.warnings)
     }
     const realSession = {
       ...optimisticSession,
@@ -1117,7 +1252,11 @@ async function createSession(e: CreateSessionEvent): Promise<void> {
         schedule.value.talks = [...schedule.value.talks]
       }
     }
-    await fetchAdditionalScheduleData()
+    if (e.session.code) {
+      fetchAdditionalScheduleData().catch((error) => {
+        console.error('Failed to refresh additional schedule data after create', error)
+      })
+    }
   } catch (error) {
     pendingBreakCreations.delete(tempId)
     if (schedule.value) {
@@ -1418,6 +1557,7 @@ function onNewBreakKeydown(event: KeyboardEvent) {
 }
 
 function onUnassignedEnter() {
+  if (isUnassignedListClosed()) return
   isUnassigning.value = true
 }
 
@@ -1461,21 +1601,22 @@ function startDragging({ event, session }: DragStartEvent) {
     session.availabilities = availabilities.talks[session.id! ?? 0]
   }
   draggedSession.value = session as SessionData
-  dragStartPos.value = { x: event.clientX, y: event.clientY }
-  pointerPos.value = { x: event.clientX, y: event.clientY }
+  dragOriginX = event.clientX
+  dragOriginY = event.clientY
+  dragPointerX = event.clientX
+  dragPointerY = event.clientY
   isPointerDragging.value = false
 
   const targetEl = (event.target as HTMLElement)?.closest('.c-linear-schedule-session') as HTMLElement | null
   if (targetEl) {
     const rect = targetEl.getBoundingClientRect()
-    dragGrabOffset.value = {
-      x: Math.max(10, Math.min(rect.width - 10, event.clientX - rect.left)),
-      y: Math.max(10, Math.min(rect.height - 10, event.clientY - rect.top)),
-    }
-    dragCardWidth.value = Math.max(220, Math.min(320, rect.width))
+    dragOffsetX = Math.max(10, Math.min(rect.width - 10, event.clientX - rect.left))
+    dragOffsetY = Math.max(10, Math.min(rect.height - 10, event.clientY - rect.top))
+    dragAvatarWidth = Math.max(220, Math.min(320, rect.width))
   } else {
-    dragGrabOffset.value = { x: 50, y: 30 }
-    dragCardWidth.value = 260
+    dragOffsetX = 50
+    dragOffsetY = 30
+    dragAvatarWidth = 260
   }
 }
 
@@ -1500,16 +1641,16 @@ async function unscheduleSession(session: { id: number | string; code?: string |
     console.error('Failed to remove session from schedule', { sessionId: movedSession.id, error })
     return
   }
-  try {
-    await fetchAdditionalScheduleData()
-  } catch (error) {
-    console.error('Failed to refresh schedule data after removing session', { sessionId: movedSession.id, error })
-  }
+  api.fetchWarnings()
+    .then((w) => replaceWarnings(w))
+    .catch((error) => {
+      console.error('Failed to refresh schedule warnings after removing session', { sessionId: movedSession.id, error })
+    })
 }
 
 async function stopDragging(event?: PointerEvent): Promise<void> {
   const session = draggedSession.value
-  const wasOverLeft = isUnassigning.value || (event && checkIsOverUnassigned(event.clientX, event.clientY))
+  const wasOverLeft = !isUnassignedListClosed() && (isUnassigning.value || Boolean(event && checkIsOverUnassigned(event.clientX, event.clientY)))
 
   try {
     if (wasOverLeft && session) {
@@ -1518,7 +1659,11 @@ async function stopDragging(event?: PointerEvent): Promise<void> {
         if (movedSession && (mode === 'shifts' || mode === 'public-shifts')) {
           movedSession.room = undefined
           await saveTalk(movedSession)
-          await fetchAdditionalScheduleData()
+          api.fetchWarnings()
+            .then((w) => replaceWarnings(w))
+            .catch((error) => {
+              console.error('Failed to refresh schedule warnings after update', { sessionId: movedSession.id, error })
+            })
         } else if (session.start) {
           await unscheduleSession(session)
         }
@@ -1527,7 +1672,11 @@ async function stopDragging(event?: PointerEvent): Promise<void> {
         if (movedSession) {
           movedSession.room = undefined
           await saveTalk(movedSession)
-          await fetchAdditionalScheduleData()
+          api.fetchWarnings()
+            .then((w) => replaceWarnings(w))
+            .catch((error) => {
+              console.error('Failed to refresh schedule warnings after update', { sessionId: movedSession.id, error })
+            })
         }
       } else {
         const breakId = session.id
@@ -1538,28 +1687,53 @@ async function stopDragging(event?: PointerEvent): Promise<void> {
         const existingBreak = schedule.value?.talks.find((s) => String(s.id) === strId || (Number(s.id) && Number(s.id) === Number(breakId)))
         if (existingBreak) {
           const numericId = Number(existingBreak.id)
+          const removedBreak = existingBreak
+          if (schedule.value) {
+            schedule.value.talks = schedule.value.talks.filter((s) => String(s.id) !== strId && (isNaN(numericId) || Number(s.id) !== numericId))
+          }
+          pendingBreakDeletions.add(strId)
+          if (!isNaN(numericId)) {
+            pendingBreakDeletions.add(String(numericId))
+          }
           if (numericId && !isNaN(numericId)) {
-            try {
-              await api.deleteTalk({ id: numericId })
-              if (schedule.value) {
-                schedule.value.talks = schedule.value.talks.filter((s) => String(s.id) !== strId && Number(s.id) !== numericId)
-              }
-              await fetchAdditionalScheduleData()
-            } catch (error) {
-              console.error('Failed to delete break on unassign', { breakId, error })
-            }
+            api.deleteTalk({ id: numericId })
+              .then(() => {
+                deletedBreakIds.add(strId)
+                if (!isNaN(numericId)) {
+                  deletedBreakIds.add(String(numericId))
+                }
+                if (schedule.value) {
+                  schedule.value.talks = schedule.value.talks.filter((s) => String(s.id) !== strId && Number(s.id) !== numericId)
+                }
+              })
+              .catch((error) => {
+                console.error('Failed to delete break on unassign', { breakId, error })
+                if (schedule.value) {
+                  const currentIds = new Set(schedule.value.talks.map((s) => String(s.id)))
+                  if (!currentIds.has(String(removedBreak.id))) {
+                    schedule.value.talks = [...schedule.value.talks, removedBreak]
+                  }
+                }
+                showScheduleActionError($t('Failed to delete break. Please try again.'))
+              })
+              .finally(() => {
+                pendingBreakDeletions.delete(strId)
+                if (!isNaN(numericId)) {
+                  pendingBreakDeletions.delete(String(numericId))
+                }
+              })
           } else {
-            if (schedule.value) {
-              schedule.value.talks = schedule.value.talks.filter((s) => String(s.id) !== strId)
-            }
+            pendingBreakDeletions.delete(strId)
           }
         }
       }
     }
   } finally {
+    resetDragAvatar()
     draggedSession.value = null
     isPointerDragging.value = false
     isUnassigning.value = false
+    cachedUnassignedRect = null
   }
 }
 
@@ -1568,35 +1742,84 @@ function onWindowResize() {
   isMobile.value = typeof window !== 'undefined' ? window.innerWidth < 768 : false
 }
 
+let pollTimeoutId: ReturnType<typeof setTimeout> | null = null
+let isPolling = false
+let isUnmounted = false
+
+function triggerImmediatePoll() {
+  if (pollTimeoutId) {
+    clearTimeout(pollTimeoutId)
+    pollTimeoutId = null
+  }
+  if (!draggedSession.value && !isUnmounted) {
+    pollUpdates()
+  }
+}
+
+const onFocus = () => triggerImmediatePoll()
+const onVisibilityChange = () => {
+  if (!document.hidden) triggerImmediatePoll()
+}
+
 async function pollUpdates() {
-  if (!schedule.value) return
-  const sched = await fetchSchedule({ since: since.value, warnings: true })
-  if (sched.version !== schedule.value.version) {
-    window.location.reload()
+  if (pollTimeoutId) {
+    clearTimeout(pollTimeoutId)
+    pollTimeoutId = null
+  }
+  if (isUnmounted || !schedule.value || draggedSession.value || isPolling) {
+    if (!isUnmounted) {
+      pollTimeoutId = window.setTimeout(pollUpdates, 5000)
+    }
     return
   }
-  const updatedTalks = [...schedule.value.talks]
-  let hasUpdates = false
-  sched.talks.forEach((talk) => {
-    const oldTalk = updatedTalks.find((t) => t.id === talk.id)
-    if (!oldTalk) {
-      updatedTalks.push(talk)
-      hasUpdates = true
-    } else if (moment(talk.updated).isAfter(moment(oldTalk.updated))) {
-      Object.assign(oldTalk, talk)
-      hasUpdates = true
+  isPolling = true
+  try {
+    const sched = await fetchSchedule({ since: since.value, warnings: true })
+    if (isUnmounted) return
+    if (sched.version !== schedule.value.version) {
+      window.location.reload()
+      return
     }
-  })
-  if (hasUpdates) {
-    schedule.value.talks = updatedTalks
-    await fetchAdditionalScheduleData()
+    const updatedTalks = [...schedule.value.talks]
+    let hasUpdates = false
+    sched.talks.forEach((talk) => {
+      const talkIdStr = String(talk.id)
+      if (pendingBreakDeletions.has(talkIdStr) || deletedBreakIds.has(talkIdStr)) {
+        return
+      }
+      const oldTalk = updatedTalks.find((t) => String(t.id) === talkIdStr)
+      if (!oldTalk) {
+        updatedTalks.push(talk)
+        hasUpdates = true
+      } else if (!oldTalk.updated || moment(talk.updated).isAfter(moment(oldTalk.updated))) {
+        Object.assign(oldTalk, talk)
+        hasUpdates = true
+      }
+    })
+    if (hasUpdates) {
+      schedule.value.talks = updatedTalks
+      api.fetchWarnings()
+        .then((w) => replaceWarnings(w))
+        .catch((error) => {
+          console.error('Failed to refresh schedule warnings after poll', error)
+        })
+    }
+    since.value = sched.now || schedule.value.now
+  } catch (error) {
+    if (!isUnmounted) {
+      console.error('Failed to poll schedule updates', error)
+    }
+  } finally {
+    isPolling = false
+    if (!isUnmounted) {
+      pollTimeoutId = window.setTimeout(pollUpdates, document.hidden ? 30000 : 5000)
+    }
   }
-  since.value = sched.now || schedule.value.now
-  window.setTimeout(pollUpdates, 10 * 125)
 }
 
 onBeforeMount(async () => {
   schedule.value = await fetchSchedule()
+  since.value = schedule.value.now
   const match = window.location.pathname.match(/\/orga\/event\/([^/]+)\/([^/]+)/);
   organizerSlug.value = match ? match[1] : null;
   eventSlug.value = match ? match[2] : null;
@@ -1611,7 +1834,7 @@ onBeforeMount(async () => {
   moment.tz.setDefault(currentTimezone.value)
   locales.value = schedule.value.locales
   currentDay.value = days.value[0]
-  window.setTimeout(pollUpdates, 10 * 100)
+  pollTimeoutId = window.setTimeout(pollUpdates, 5000)
   await fetchAdditionalScheduleData()
   await new Promise<void>((resolve) => {
     const poll = () => {
@@ -1695,6 +1918,13 @@ function updateActionsWidth(): void {
 onMounted(() => {
   isMounted.value = true
   updateActionsWidth()
+  const unassignedEl = document.getElementById('unassigned')
+  if (unassignedEl && typeof ResizeObserver !== 'undefined') {
+    unassignedResizeObserver = new ResizeObserver(() => {
+      cachedUnassignedRect = null
+    })
+    unassignedResizeObserver.observe(unassignedEl)
+  }
   const actionsEl = document.getElementById('schedule-action-wrapper')
   if (actionsEl && typeof ResizeObserver !== 'undefined') {
     actionsObserver = new ResizeObserver(updateActionsWidth)
@@ -1706,6 +1936,8 @@ onMounted(() => {
   document.addEventListener('touchmove', preventScrollOnDrag, { passive: false })
   document.addEventListener('fullscreenchange', onFullscreenChange)
   document.addEventListener('webkitfullscreenchange', onFullscreenChange)
+  window.addEventListener('focus', onFocus)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('pointermove', onGlobalPointerMove, { passive: true })
   window.addEventListener('pointerup', onGlobalPointerUp)
   window.addEventListener('click', onWindowClick)
@@ -1717,14 +1949,27 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  isUnmounted = true
+  resetDragAvatar()
+  if (unassignedResizeObserver) {
+    unassignedResizeObserver.disconnect()
+    unassignedResizeObserver = null
+  }
   if (actionsObserver) {
     actionsObserver.disconnect()
     actionsObserver = null
   }
+  if (pollTimeoutId) {
+    clearTimeout(pollTimeoutId)
+    pollTimeoutId = null
+  }
   if (unscheduleHintTimer) clearTimeout(unscheduleHintTimer)
+  if (scheduleActionErrorTimer) clearTimeout(scheduleActionErrorTimer)
   document.removeEventListener('touchmove', preventScrollOnDrag)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   document.removeEventListener('webkitfullscreenchange', onFullscreenChange)
+  window.removeEventListener('focus', onFocus)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('pointermove', onGlobalPointerMove)
   window.removeEventListener('pointerup', onGlobalPointerUp)
   window.removeEventListener('click', onWindowClick)
@@ -1745,8 +1990,10 @@ onUnmounted(() => {
 	will-change: transform
 	cursor: grabbing
 	opacity: 0.94
+	visibility: hidden
 	transform-origin: 20px 20px
-	filter: drop-shadow(0 14px 28px rgba(0, 0, 0, 0.22)) drop-shadow(0 4px 10px rgba(0, 0, 0, 0.14))
+	border-radius: 6px
+	box-shadow: 0 14px 28px rgba(0, 0, 0, 0.22), 0 4px 10px rgba(0, 0, 0, 0.14)
 	.c-linear-schedule-session
 		margin: 0
 		min-width: 0
@@ -1757,29 +2004,38 @@ onUnmounted(() => {
 
 .unassigned-drop-zone
 	display: flex
-	align-items: center
-	gap: 10px
+	flex-direction: column
+	align-items: stretch
+	gap: 8px
 	padding: 10px 12px
 	margin: 0 0 12px 0
 	border-radius: 8px
-	border: 2px dashed #ef4444
-	background: linear-gradient(135deg, rgba(254, 242, 242, 0.95), rgba(254, 226, 226, 0.85))
-	color: #b91c1c
-	box-shadow: 0 2px 8px rgba(239, 68, 68, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)
+	border: 2px dashed #d97706
+	background: linear-gradient(135deg, rgba(254, 243, 199, 0.95), rgba(253, 230, 138, 0.85))
+	color: #92400e
+	box-shadow: 0 2px 8px rgba(217, 119, 6, 0.1), 0 1px 2px rgba(0, 0, 0, 0.04)
 	user-select: none
 	pointer-events: none
 	transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1)
 	animation: dropZoneSlideDown 0.2s cubic-bezier(0.16, 1, 0.3, 1) both
+	position: sticky
+	top: 0
+	z-index: 40
+	.drop-zone-main
+		display: flex
+		align-items: center
+		gap: 10px
+		width: 100%
 	.drop-zone-icon-wrap
 		width: 30px
 		height: 30px
 		border-radius: 50%
-		background: rgba(239, 68, 68, 0.12)
+		background: rgba(217, 119, 6, 0.15)
 		display: flex
 		align-items: center
 		justify-content: center
 		flex-shrink: 0
-		color: #dc2626
+		color: #b45309
 		font-size: 13px
 		transition: transform 0.2s ease, background-color 0.2s ease, color 0.2s ease
 	.drop-zone-content
@@ -1792,23 +2048,63 @@ onUnmounted(() => {
 		font-size: 12.5px
 		font-weight: 600
 		line-height: 1.25
-		color: #b91c1c
+		color: #92400e
 	.drop-zone-subtitle
 		font-size: 11px
 		font-weight: 400
-		color: #dc2626
-		opacity: 0.85
+		color: #b45309
+		opacity: 0.9
 		line-height: 1.2
 		margin-top: 1px
+	.drop-zone-preview
+		display: flex
+		flex-direction: column
+		gap: 6px
+		width: 100%
+		margin-top: 4px
+		animation: dropZonePreviewIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) both
+		.unassigned-preview-pill
+			width: 100%
+			margin: 0
+			min-width: 0
+			box-sizing: border-box
+			opacity: 0.95
+			border-radius: 6px
+			box-shadow: 0 4px 14px rgba(217, 119, 6, 0.22), 0 1px 3px rgba(0, 0, 0, 0.08)
+			border: 1.5px solid rgba(217, 119, 6, 0.5)
+			pointer-events: none
 	&.is-hovered
-		border-color: #dc2626
-		background: linear-gradient(135deg, #fee2e2, #fecaca)
-		box-shadow: 0 6px 18px rgba(220, 38, 38, 0.22), 0 2px 4px rgba(220, 38, 38, 0.1)
+		border-color: #b45309
+		background: linear-gradient(135deg, #fef3c7, #fde68a)
+		box-shadow: 0 6px 18px rgba(217, 119, 6, 0.25), 0 2px 4px rgba(217, 119, 6, 0.12)
 		transform: translateY(-1px)
 		.drop-zone-icon-wrap
-			background: #dc2626
+			background: #b45309
 			color: #ffffff
 			transform: scale(1.08)
+	&.is-break-drop
+		border-color: #ef4444
+		background: linear-gradient(135deg, rgba(254, 242, 242, 0.95), rgba(254, 226, 226, 0.85))
+		color: #b91c1c
+		box-shadow: 0 2px 8px rgba(239, 68, 68, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04)
+		.drop-zone-icon-wrap
+			background: rgba(239, 68, 68, 0.12)
+			color: #dc2626
+		.drop-zone-title
+			color: #b91c1c
+		.drop-zone-subtitle
+			color: #dc2626
+		.drop-zone-preview
+			.unassigned-preview-pill
+				box-shadow: 0 4px 14px rgba(220, 38, 38, 0.18), 0 1px 3px rgba(0, 0, 0, 0.08)
+				border: 1.5px solid rgba(220, 38, 38, 0.45)
+		&.is-hovered
+			border-color: #dc2626
+			background: linear-gradient(135deg, #fee2e2, #fecaca)
+			box-shadow: 0 6px 18px rgba(220, 38, 38, 0.22), 0 2px 4px rgba(220, 38, 38, 0.1)
+			.drop-zone-icon-wrap
+				background: #dc2626
+				color: #ffffff
 
 .pretalx-schedule
 	display: flex
@@ -1854,45 +2150,57 @@ onUnmounted(() => {
 		.timezone-label
 			cursor: default
 			color: $clr-secondary-text-light
-	.days
-		background-color: $clr-white
-		tabs-style(active-color: var(--color-primary), indicator-color: var(--color-primary), background-color: transparent)
-		margin-bottom: 0
+	.date-selector
+		margin-top: 17px
+		display: flex
+		align-items: center
+		gap: 2px
 		flex: 1
 		min-width: 0
 		height: 36px
 		max-height: 36px
 		overflow-x: auto
 		overflow-y: hidden
-		scrollbar-width: thin
-		.bunt-tabs
+		scrollbar-width: none
+		padding: 0 4px
+		box-sizing: border-box
+		&::-webkit-scrollbar
+			display: none
+
+		.day-btn
+			display: inline-flex
+			align-items: center
+			justify-content: center
 			height: 36px
-		.bunt-tabs-header
-			width: 100%
-			min-width: max-content
-			height: 36px
-		.bunt-tabs-header-items
-			display: flex
-			flex-wrap: nowrap
-			width: 100%
-			min-width: max-content
-			height: 36px
-			margin: 0
-			padding: 0
-			.bunt-tab-header-item
-				flex-shrink: 0
-				white-space: nowrap
-				height: 36px
-				padding: 0 12px
-				font-weight: 400
-			.bunt-tab-header-item-text
-				white-space: nowrap
-				font-size: 13px
-				font-weight: 500
-				letter-spacing: 0.02em
-			&.active .bunt-tab-header-item-text,
-			.bunt-tab-header-item.active .bunt-tab-header-item-text
-				font-weight: 500
+			padding: 0 14px
+			border: none
+			border-bottom: 2px solid transparent
+			background: transparent
+			cursor: pointer
+			font-size: 13px
+			font-weight: 500
+			white-space: nowrap
+			flex-shrink: 0
+			color: #64748b
+			font-family: inherit
+			user-select: none
+			transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease
+			margin-bottom: -1px
+			box-sizing: border-box
+
+			&:hover:not(.active)
+				color: #1e293b
+				background-color: #f8fafc
+
+			&.active
+				color: var(--color-primary, #0284c7)
+				border-bottom-color: var(--color-primary, #0284c7)
+				font-weight: 600
+				background-color: transparent
+
+			&:focus-visible
+				outline: 2px solid var(--color-primary, #0284c7)
+				outline-offset: -2px
 	#unassigned
 		margin-top: 0
 		box-sizing: border-box
@@ -1924,10 +2232,13 @@ onUnmounted(() => {
 				visibility: hidden
 				pointer-events: none
 		&.is-unassign-target
-			background-color: rgba(239, 68, 68, 0.04)
-			border: 2px dashed #ef4444
+			background-color: rgba(217, 119, 6, 0.04)
+			border: 2px dashed #d97706
 			border-radius: 6px
 			outline: none
+			&.is-break-target
+				background-color: rgba(239, 68, 68, 0.04)
+				border: 2px dashed #ef4444
 		&::-webkit-scrollbar
 			width: 6px
 		&::-webkit-scrollbar-track
@@ -1951,6 +2262,9 @@ onUnmounted(() => {
 			box-sizing: border-box
 			border-radius: 6px
 			box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05)
+			&:hover:not(.dragging):not(.clone),
+			&:focus-within:not(.dragging):not(.clone)
+				z-index: 1
 			.time-box
 				width: 52px
 				padding: 8px 4px
@@ -1985,7 +2299,7 @@ onUnmounted(() => {
 		.unassigned-header
 			position: sticky
 			top: 0
-			z-index: 10
+			z-index: 50
 			background-color: $clr-white
 			padding-bottom: 2px
 			display: flex
@@ -2292,7 +2606,7 @@ onUnmounted(() => {
 		width: 100%
 		height: 100%
 		margin-right: 0
-		padding-left: 8px
+		margin-left: 8px
 		box-sizing: border-box
 		overflow: auto
 		scrollbar-width: thin
@@ -2330,8 +2644,10 @@ onUnmounted(() => {
 					font-size: 14px
 					color: #1e293b
 					.drop-hint
-						color: var(--color-primary, #2185d0)
-						font-weight: normal
+						color: #b45309
+						font-weight: 500
+						&.is-break-hint
+							color: #dc2626
 				.unassigned-collapse-icon
 					color: #64748b
 					font-size: 14px
@@ -2344,7 +2660,7 @@ html.rtl
 		border-left: 1px solid #e2e8f0
 	#schedule-wrapper
 		padding-left: 0
-		padding-right: 8px
+		margin-right: 8px
 	.schedule-controls
 		padding-right: 0
 		padding-left: 220px
@@ -2546,6 +2862,28 @@ html.rtl
 					width: 100px
 		.warning
 			color: #b23e65
+		.session-warnings
+			.session-warnings-label
+				display: flex
+				flex-direction: row
+				align-items: center
+				justify-content: flex-end
+				gap: 6px
+				white-space: nowrap
+				text-align: right
+				i
+					flex: none
+					display: inline-flex
+					color: #b23e65
+					line-height: 1
+					font-size: 14px
+			.session-warnings-list
+				margin: 0
+				padding: 0
+				list-style: none
+				line-height: 1.4
+				li + li
+					margin-top: 4px
 		.session-editor-error
 			display: flex
 			align-items: center
@@ -2683,6 +3021,41 @@ html.rtl
 	100%
 		opacity: 1
 		transform: translateY(0) scale(1)
+
+@keyframes dropZonePreviewIn
+	0%
+		opacity: 0
+		transform: translateY(-4px) scale(0.98)
+	100%
+		opacity: 1
+		transform: translateY(0) scale(1)
+
+.schedule-action-toast
+	display: flex
+	align-items: center
+	justify-content: space-between
+	gap: 12px
+	background-color: #fee2e2
+	border: 1px solid #ef4444
+	color: #991b1b
+	padding: 8px 14px
+	margin: 8px 16px 0 16px
+	border-radius: 6px
+	font-size: 13px
+	font-weight: 500
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08)
+	animation: dropZoneSlideDown 0.2s ease-out both
+	position: relative
+	z-index: 50
+	.action-toast-dismiss
+		background: none
+		border: none
+		color: #991b1b
+		cursor: pointer
+		padding: 2px 6px
+		border-radius: 4px
+		&:hover
+			background-color: rgba(239, 68, 68, 0.15)
 
 .sidebar-divider-line
 	position: absolute
@@ -2846,7 +3219,7 @@ html[dir="rtl"],
 html.rtl
 	#schedule-wrapper
 		padding-left: 0
-		padding-right: 8px
+		margin-right: 8px
 	.schedule-timezone-selector
 		.timezone-dropdown-menu
 			right: auto
