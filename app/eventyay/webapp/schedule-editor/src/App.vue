@@ -1379,6 +1379,7 @@ async function editorSave(): Promise<void> {
 }
 
 function editorCancel(): void {
+  if (editorSessionWaiting.value) return
   editorSession.value = null
   editorSessionError.value = ''
 }
